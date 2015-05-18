@@ -5,6 +5,7 @@ import (
     "log"
     "strings"
     "os"
+    "os/exec"
     "net/http"
     "archive/zip"
     "io"
@@ -30,20 +31,80 @@ func main() {
     }
     defer db.Close()
 
-    name := "f_5500_%s_latest"
-
-    tableName, err := createTable(db, baseUrl, name, year)
-    if err != nil {
-        log.Fatal(err)
+    names := []string{
+        "f_5500_%s_latest", 
+        "f_5500_sf_%s_latest",
+        "f_sch_a_%s_latest",
+        "f_sch_a_part1_%s_latest",
+        "f_sch_c_%s_latest",
+        "f_sch_c_part1_item1_%s_latest",
+        "f_sch_c_part1_item2_%s_latest",
+        "f_sch_c_part1_item2_codes_%s_latest",
+        "f_sch_c_part1_item3_%s_latest",
+        "f_sch_c_part1_item3_codes_%s_latest",
+        "f_sch_c_part2_%s_latest",
+        "f_sch_c_part2_codes_%s_latest",
+        "f_sch_c_part3_%s_latest",
+        "f_sch_d_%s_latest",
+        "f_sch_d_part1_%s_latest",
+        "f_sch_d_part2_%s_latest",
+        "f_sch_g_%s_latest",
+        "f_sch_g_part1_%s_latest",
+        "f_sch_g_part2_%s_latest",
+        "f_sch_g_part3_%s_latest",
+        "f_sch_g_%s_latest",
+        "f_sch_g_%s_latest",
+        "f_sch_g_%s_latest",
+        "f_sch_h_%s_latest",
+        "f_sch_h_part1_%s_latest",
+        "f_sch_i_%s_latest",
+        "f_sch_r_%s_latest",
+        "f_sch_r_part1_%s_latest",
+        "f_sch_mb_%s_latest",
+        "f_sch_mb_part1_%s_latest",
+        "f_sch_mb_part2_%s_latest",
+        "f_sch_sb_%s_latest",
+        "f_sch_sb_part1_%s_latest",
     }
-    fmt.Println("Created table: " + tableName)
 
-    csvFilename, err := downloadCSV(db, baseUrl, name, year)
-    if err != nil {
-        log.Fatal(err)
+    for _, name := range names {
+        tableName, err := createTable(db, baseUrl, name, year)
+        if err != nil {
+            log.Fatal(err)
+        }
+        fmt.Println("Created table: " + tableName)
+
+        csvFilename, err := downloadCSV(db, baseUrl, name, year)
+        if err != nil {
+            log.Fatal(err)
+        }
+        //defer os.Remove(csvFilename)
+        fmt.Println("Created CSV file: " + csvFilename)
+
+        err = importCSV("localhost", dbName, tableName, csvFilename)
     }
-    defer os.Remove(csvFilename)
-    fmt.Println("Created CSV file: " + csvFilename)
+}
+
+func importCSV(dbEndpoint string, dbName string, tableName string, csvFilename string) (error) {
+    connection := fmt.Sprintf("host=%s port=5432 dbname=%s sslmode=disable", dbEndpoint, dbName)
+    s := fmt.Sprintf(`TRUNCATE %s`, tableName)
+    fmt.Println("psql \"" + connection + "\" -c \"" + s + "\"")
+    cmd := exec.Command("psql", connection, "-c", s)
+    output, err := cmd.Output()
+    if err != nil {
+        return err
+    }
+    fmt.Println(string(output))
+
+    s = fmt.Sprintf(`\copy %s FROM '%s' DELIMITER ',' CSV HEADER`, tableName, csvFilename)
+    fmt.Println("psql \"" + connection + "\" -c \"" + s + "\"")
+    cmd = exec.Command("psql", connection, "-c", s)
+    output, err = cmd.Output()
+    if err != nil {
+        return err
+    }
+    fmt.Println(string(output))
+    return nil
 }
 
 func downloadCSV(db *sql.DB, baseUrl, name string, year string) (string, error) {
@@ -65,7 +126,7 @@ func downloadCSV(db *sql.DB, baseUrl, name string, year string) (string, error) 
     csvFilename := strings.ToLower(name) + ".csv"
 
     for _, f := range r.File {
-        if f.Name == csvFilename {
+        if strings.ToLower(f.Name) == csvFilename {
             csvFile, err := f.Open()
             if err != nil {
                 log.Fatal(err)
@@ -110,25 +171,35 @@ func createTable(db *sql.DB, baseUrl, name string, year string) (string, error) 
     sqlLines = append(sqlLines, fmt.Sprintf("DROP TABLE IF EXISTS %s CASCADE;", tableName))
     sqlLines = append(sqlLines, fmt.Sprintf("CREATE TABLE %s (", tableName))
 
+    // first column is always ACK_ID
+    scanner.Scan()
+    sqlLines = append(sqlLines, `    "ACK_ID" varchar(30)`)
+
     for scanner.Scan() {
         line := scanner.Text()
         parts := strings.Split(line, ",")
 
+        sqlLines[len(sqlLines)-1] = sqlLines[len(sqlLines)-1] + ","
+
         switch {
-            case parts[1] == "ACK_ID":
-                sqlLines = append(sqlLines, `    "ACK_ID" varchar(30) PRIMARY KEY`)
-    
+            case strings.HasSuffix(parts[1], "_DATE") || parts[1] == "FORM_TAX_PRD":
+                sqlLines = append(sqlLines, fmt.Sprintf(`    "%s" timestamp`, parts[1]))
+
             case len(parts) == 4:
-                sqlLines[len(sqlLines)-1] = sqlLines[len(sqlLines)-1] + ","
                 if parts[3] == "1" && strings.HasSuffix(parts[1], "_IND") {
-                    sqlLines = append(sqlLines, fmt.Sprintf(`    "%s" bool`, parts[1]))
+                    sqlLines = append(sqlLines, fmt.Sprintf(`    "%s" int`, parts[1]))
                 } else {
-                    sqlLines = append(sqlLines, fmt.Sprintf(`    "%s" varchar(%s)`, parts[1], parts[3]))
+                    if parts[3] == "0" {
+                        sqlLines = append(sqlLines, fmt.Sprintf(`    "%s" char`, parts[1]))
+                    } else {
+                        sqlLines = append(sqlLines, fmt.Sprintf(`    "%s" varchar(%s)`, parts[1], parts[3]))
+                    }
                 }
 
             case parts[2] == "NUMERIC":
-                sqlLines[len(sqlLines)-1] = sqlLines[len(sqlLines)-1] + ","
-                if parts[1] == "ROW_ORDER" || strings.HasSuffix(parts[1], "_CNT") {
+                if parts[1] == "ROW_ORDER" {
+                    sqlLines = append(sqlLines, fmt.Sprintf(`    "%s" int`, parts[1]))
+                } else if strings.HasSuffix(parts[1], "_CNT") {
                     sqlLines = append(sqlLines, fmt.Sprintf(`    "%s" int`, parts[1]))
                 } else {
                     sqlLines = append(sqlLines, fmt.Sprintf(`    "%s" numeric(19,6)`, parts[1]))

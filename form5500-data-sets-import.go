@@ -16,14 +16,13 @@ import (
     _ "github.com/lib/pq"
 )
 
-// USAGE: go run form5500-data-sets-import.go form5500_data_sets 2013 http://askebsa.dol.gov/FOIA%20Files/ ./
-// USAGE: go run form5500-data-sets-import.go fbi_development 2013 http://askebsa.dol.gov/FOIA%20Files/ ./
+// USAGE: go run form5500-data-sets-import.go "host=localhost port=5432 dbname=form5500_data_sets sslmode=disable" 2013 http://askebsa.dol.gov/FOIA%20Files/
+// USAGE: go run form5500-data-sets-import.go "host=localhost port=5432 dbname=fbi_development sslmode=disable" 2013 http://askebsa.dol.gov/FOIA%20Files/
+
 func main() {
-    dbName := os.Args[1]
+    connection := os.Args[1]
     year := os.Args[2]
     baseUrl := os.Args[3]
-
-    connection := fmt.Sprintf("host=localhost port=5432 dbname=%s sslmode=disable", dbName)
 
     db, err := sql.Open("postgres", connection)
     if err != nil {
@@ -78,15 +77,14 @@ func main() {
         if err != nil {
             log.Fatal(err)
         }
-        //defer os.Remove(csvFilename)
+        defer os.Remove(csvFilename)
         fmt.Println("Created CSV file: " + csvFilename)
 
-        err = importCSV("localhost", dbName, tableName, csvFilename)
+        err = importCSV(connection, tableName, csvFilename)
     }
 }
 
-func importCSV(dbEndpoint string, dbName string, tableName string, csvFilename string) (error) {
-    connection := fmt.Sprintf("host=%s port=5432 dbname=%s sslmode=disable", dbEndpoint, dbName)
+func importCSV(connection string, tableName string, csvFilename string) (error) {
     s := fmt.Sprintf(`TRUNCATE %s`, tableName)
     fmt.Println("psql \"" + connection + "\" -c \"" + s + "\"")
     cmd := exec.Command("psql", connection, "-c", s)
@@ -117,15 +115,15 @@ func downloadCSV(db *sql.DB, baseUrl, name string, year string) (string, error) 
     }
     defer os.Remove(zipFilename)
 
-    r, err := zip.OpenReader(zipFilename)
+    reader, err := zip.OpenReader(zipFilename)
     if err != nil {
         log.Fatal(err)
     }
-    defer r.Close()
+    defer reader.Close()
 
     csvFilename := strings.ToLower(name) + ".csv"
 
-    for _, f := range r.File {
+    for _, f := range reader.File {
         if strings.ToLower(f.Name) == csvFilename {
             csvFile, err := f.Open()
             if err != nil {
